@@ -1,43 +1,97 @@
-# 使用轻量级的 Node.js 镜像 (Alpine 版本)
-# Alpine 体积小，适合做网络工具容器
-FROM node:lts-alpine
+name: Build and Push Docker Image
 
-# 安装基础工具 
-# 针对 ArgoSBX/Sing-box/Xray 这类脚本，通常需要 curl, bash, unzip, jq, openssl 等
-RUN apk add --no-cache \
-    bash \
-    curl \
-    wget \
-    git \
-    tzdata \
-    ca-certificates \
-    openssl \
-    tar \
-    unzip \
-    jq
+on:
+  push:
+    branches: [ "main", "master" ]
+    tags: [ 'v*.*.*' ]
+  pull_request:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
 
-# 设置工作目录
-WORKDIR /app
+env:
+  # =========================================================
+  # 配置区域 (无需修改，自动适配)
+  # =========================================================
+  REGISTRY: ghcr.io
+  # 自动使用当前仓库名 (例如 zzzhhh1/argosbx1224)
+  IMAGE_NAME: ${{ github.repository }}
 
-# 1. 复制所有文件到容器中
-# 这是一个"懒人"写法，避免使用 COPY package*.json 时因文件不存在而报错
-COPY . .
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
 
-# 2. 智能依赖安装
-# 如果检测到 package.json，才尝试安装 npm 依赖
-RUN if [ -f package.json ]; then npm install --production; fi
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-# 3. 赋予所有可能的脚本执行权限
-RUN chmod +x *.sh 2>/dev/null || true
-RUN chmod +x *.js 2>/dev/null || true
+      # =========================================================
+      # 核心步骤：动态生成 Dockerfile
+      # 即使仓库里没有 Dockerfile，这一步也会临时生成一个
+      # =========================================================
+      - name: Generate Dockerfile dynamically
+        run: |
+          cat <<EOF > Dockerfile
+          # 使用轻量级的 Node.js 镜像 (Alpine 版本)
+          FROM node:lts-alpine
 
-# 暴露端口 (根据需要修改，Argo/Xray 常用端口可能是 8080 或随机)
-# EXPOSE 8080
+          # 安装基础工具 (针对 ArgoSBX/Sing-box/Xray 等脚本)
+          RUN apk add --no-cache bash curl wget git tzdata ca-certificates openssl tar unzip jq
 
-# 4. 智能启动命令
-# 脚本会按顺序检查：
-# - 如果有 package.json -> 运行 npm start
-# - 如果有 index.js    -> 运行 node index.js
-# - 如果有 start.sh    -> 运行 ./start.sh
-# - 都没有             -> 报错退出
-CMD ["sh", "-c", "if [ -f package.json ]; then npm start; elif [ -f index.js ]; then node index.js; elif [ -f start.sh ]; then ./start.sh; else echo 'Error: No startup script (package.json/index.js/start.sh) found!'; exit 1; fi"]
+          # 设置工作目录
+          WORKDIR /app
+
+          # 1. 复制所有文件到容器中
+          COPY . .
+
+          # 2. 智能依赖安装 (如果有 package.json)
+          RUN if [ -f package.json ]; then npm install --production; fi
+
+          # 3. 赋予所有可能的脚本执行权限
+          RUN chmod +x *.sh 2>/dev/null || true
+          RUN chmod +x *.js 2>/dev/null || true
+
+          # 4. 智能启动命令 (自动判断启动方式)
+          CMD ["sh", "-c", "if [ -f package.json ]; then npm start; elif [ -f index.js ]; then node index.js; elif [ -f start.sh ]; then ./start.sh; else echo 'Error: No startup script found!'; exit 1; fi"]
+          EOF
+          
+          echo "临时 Dockerfile 已生成。"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to the Container registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=ref,event=branch
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile  # 使用上面动态生成的文件
+          push: ${{ github.event_name != 'pull_request' }}
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
