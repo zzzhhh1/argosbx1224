@@ -4,7 +4,7 @@ on:
   push:
     branches: [ main ]
     paths:
-      - 'Dockerfile'
+      - 'container'
       - 'index.js'
       - 'package.json'
   pull_request:
