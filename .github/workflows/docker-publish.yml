@@ -1,41 +1,43 @@
 # 使用轻量级的 Node.js 镜像 (Alpine 版本)
-# 如果您的项目主要由 Shell 脚本组成，也可以换成 ubuntu:latest 或 alpine:latest
+# Alpine 体积小，适合做网络工具容器
 FROM node:lts-alpine
 
-# 安装基础工具 (根据您的项目描述 "小钢炮脚本"，可能需要 curl, bash, git 等)
+# 安装基础工具 
+# 针对 ArgoSBX/Sing-box/Xray 这类脚本，通常需要 curl, bash, unzip, jq, openssl 等
 RUN apk add --no-cache \
     bash \
     curl \
     wget \
     git \
     tzdata \
-    ca-certificates
+    ca-certificates \
+    openssl \
+    tar \
+    unzip \
+    jq
 
 # 设置工作目录
 WORKDIR /app
 
-# 1. 先复制依赖文件 (利用 Docker 缓存层)
-# 如果您的项目没有 package.json，可以删除这两行
-COPY package*.json ./
-# 如果有 package.json，尝试安装依赖；如果没有则忽略错误
-RUN if [ -f package.json ]; then npm install --production; fi
-
-# 2. 复制剩余的所有项目文件
+# 1. 复制所有文件到容器中
+# 这是一个"懒人"写法，避免使用 COPY package*.json 时因文件不存在而报错
 COPY . .
 
-# 赋予所有脚本执行权限 (防止 Permission denied)
-RUN chmod +x *.sh || true
-RUN chmod +x *.js || true
+# 2. 智能依赖安装
+# 如果检测到 package.json，才尝试安装 npm 依赖
+RUN if [ -f package.json ]; then npm install --production; fi
 
-# 暴露端口 (根据您的应用修改，常用 3000, 8080 等)
-# EXPOSE 3000
+# 3. 赋予所有可能的脚本执行权限
+RUN chmod +x *.sh 2>/dev/null || true
+RUN chmod +x *.js 2>/dev/null || true
 
-# 启动命令
-# 1. 如果是 Node 项目:
-CMD ["npm", "start"]
+# 暴露端口 (根据需要修改，Argo/Xray 常用端口可能是 8080 或随机)
+# EXPOSE 8080
 
-# 2. 如果是纯 Shell 脚本项目 (例如 start.sh):
-# CMD ["./start.sh"]
-
-# 3. 如果只是想直接运行 index.js:
-# CMD ["node", "index.js"]
+# 4. 智能启动命令
+# 脚本会按顺序检查：
+# - 如果有 package.json -> 运行 npm start
+# - 如果有 index.js    -> 运行 node index.js
+# - 如果有 start.sh    -> 运行 ./start.sh
+# - 都没有             -> 报错退出
+CMD ["sh", "-c", "if [ -f package.json ]; then npm start; elif [ -f index.js ]; then node index.js; elif [ -f start.sh ]; then ./start.sh; else echo 'Error: No startup script (package.json/index.js/start.sh) found!'; exit 1; fi"]
