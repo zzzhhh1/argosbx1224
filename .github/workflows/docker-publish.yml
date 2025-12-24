@@ -1,82 +1,41 @@
-name: Build and Push Docker Image
+# 使用轻量级的 Node.js 镜像 (Alpine 版本)
+# 如果您的项目主要由 Shell 脚本组成，也可以换成 ubuntu:latest 或 alpine:latest
+FROM node:lts-alpine
 
-on:
-  push:
-    branches: [ "main" ]    # 只要推送到 main 分支就触发
-    tags: [ 'v*.*.*' ]      # 只要打 v1.0.0 这样的标签就触发
-  pull_request:
-    branches: [ "main" ]    # PR 时只测试构建，不推送
-  workflow_dispatch:        # 允许在 GitHub 网页上手动点按钮触发
+# 安装基础工具 (根据您的项目描述 "小钢炮脚本"，可能需要 curl, bash, git 等)
+RUN apk add --no-cache \
+    bash \
+    curl \
+    wget \
+    git \
+    tzdata \
+    ca-certificates
 
-env:
-  # =========================================================
-  # 傻瓜式配置区 (通常完全不用改)
-  # =========================================================
-  
-  # 1. 镜像仓库: 默认推送到 GitHub 自己的 ghcr.io
-  REGISTRY: ghcr.io
-  
-  # 2. 镜像名称: 自动使用当前仓库名 (例如 zzzhhh1/argosbx1224)
-  # 脚本会自动将其转换为全小写，防止大小写报错
-  IMAGE_NAME: ${{ github.repository }}
-  
-  # 3. Dockerfile 位置: 默认在根目录
-  DOCKERFILE_PATH: ./Dockerfile
+# 设置工作目录
+WORKDIR /app
 
-jobs:
-  build-and-push:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write # 必须有这个权限才能推送到 GHCR
+# 1. 先复制依赖文件 (利用 Docker 缓存层)
+# 如果您的项目没有 package.json，可以删除这两行
+COPY package*.json ./
+# 如果有 package.json，尝试安装依赖；如果没有则忽略错误
+RUN if [ -f package.json ]; then npm install --production; fi
 
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+# 2. 复制剩余的所有项目文件
+COPY . .
 
-      # 1. 安装 QEMU (让 GitHub 这种 x86 机器也能构建 ARM 镜像)
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+# 赋予所有脚本执行权限 (防止 Permission denied)
+RUN chmod +x *.sh || true
+RUN chmod +x *.js || true
 
-      # 2. 安装 Docker 构建工具
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+# 暴露端口 (根据您的应用修改，常用 3000, 8080 等)
+# EXPOSE 3000
 
-      # 3. 登录到 GitHub 容器仓库
-      - name: Log in to the Container registry
-        if: github.event_name != 'pull_request'
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+# 启动命令
+# 1. 如果是 Node 项目:
+CMD ["npm", "start"]
 
-      # 4. 自动生成镜像标签 (Metadata)
-      # - 推送 main 分支 -> 生成 tag: latest
-      # - 推送 v1.0.0 标签 -> 生成 tag: 1.0.0, 1.0, latest
-      # - PR -> 生成 tag: pr-123
-      - name: Extract metadata (tags, labels) for Docker
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=ref,event=branch
+# 2. 如果是纯 Shell 脚本项目 (例如 start.sh):
+# CMD ["./start.sh"]
 
-      # 5. 正式构建并推送
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ${{ env.DOCKERFILE_PATH }}
-          # 只有非 PR 事件才执行推送
-          push: ${{ github.event_name != 'pull_request' }}
-          # 同时构建 x86 和 ARM 架构 (如不需要 ARM 可删掉 linux/arm64 加快速度)
-          platforms: linux/amd64,linux/arm64
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+# 3. 如果只是想直接运行 index.js:
+# CMD ["node", "index.js"]
